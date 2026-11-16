@@ -1,82 +1,142 @@
+
+"""
+Electricity Bill Calculator.
+
+Reads meter readings, calculates electricity charges,
+generates bills, and saves the results in JSON format.
+"""
+
 import json
-import os
-import xml.etree.ElementTree as ET
+import ipaddress
+import http.client
+
+from defusedxml import ElementTree as ET
+
 
 SLABS = [(100, 3.5), (200, 5.0), (300, 6.5)]
 HIGH_RATE = 8.0
 FIXED_CHARGE = 75
-METER_XML = ("<meters>"
-             "<meter id='M1' prev='1200' curr='1350'/>"
-             "<meter id='M2' prev='5000' curr='5420'/>"
-             "<meter id='M3' prev='800' curr='760'/>"
-             "</meters>")
-CLERK_PASSWORD = "bill-desk-demo"
-bills = []
+
+METER_XML = (
+    "<meters>"
+    "<meter id='M1' prev='1200' curr='1350'/>"
+    "<meter id='M2' prev='5000' curr='5420'/>"
+    "<meter id='M3' prev='800' curr='760'/>"
+    "</meters>"
+)
+
+BILLS = []
 
 
-def readMeters(xmlText):
-    root = ET.fromstring(xmlText)
-    return [(m.get("id"), int(m.get("prev")), int(m.get("curr")))
-            for m in root.findall("meter")]
+def read_meters(xml_text):
+    """Read meter IDs and previous and current readings from XML."""
+    root = ET.fromstring(xml_text)
+    return [
+        (meter.get("id"), int(meter.get("prev")), int(meter.get("curr")))
+        for meter in root.findall("meter")
+    ]
 
-def calculateUnits(previous, current):
+
+def calculate_units(previous, current):
+    """Calculate electricity units consumed by a meter."""
     if current < previous:
         print("Warning: meter reading went backwards")
         return 0
+
     return current - previous
 
 
-def energyCharge(units):
+def energy_charge(units):
+    """Calculate the energy charge using the applicable slabs."""
     charge = 0
     lower = 0
     remaining = units
+
     for limit, rate in SLABS:
-        slabUnits = min(remaining, limit - lower)
-        if slabUnits > 0:
-            charge += slabUnits * rate
-            remaining -= slabUnits
+        slab_units = min(remaining, limit - lower)
+
+        if slab_units > 0:
+            charge += slab_units * rate
+            remaining -= slab_units
+
         lower = limit
+
     return charge + remaining * HIGH_RATE
 
 
-def generateBill(meterId, units, taxRate=0.05, extras={}):
-    amount = energyCharge(units) + FIXED_CHARGE + sum(extras.values())
-    bill = {"meter" : meterId, "units": units,
-            "amount": round(amount * (1 + taxRate), 2)}
-    bills.append(bill)
+def generate_bill(meter_id, units, tax_rate=0.05, extras=None):
+    """Generate and store an electricity bill."""
+    if extras is None:
+        extras = {}
+
+    amount = energy_charge(units) + FIXED_CHARGE + sum(extras.values())
+
+    bill = {
+        "meter": meter_id,
+        "units": units,
+        "amount": round(amount * (1 + tax_rate), 2)
+    }
+
+    BILLS.append(bill)
     return bill
 
 
-def averageBill(currency):
-    if not bills:
+def average_bill():
+    """Calculate the average amount of all generated bills."""
+    if not BILLS:
         return 0
-    return round(sum(bill["amount"] for bill in bills) / len(bills), 2)
+
+    total = sum(bill["amount"] for bill in BILLS)
+    return round(total / len(BILLS), 2)
 
 
-def saveBills(fileName="bills.json"):
-    with open(fileName, "w") as f:
-        json.dump(bills, f, indent=2)
+def save_bills(file_name="bills.json"):
+    """Save all generated bills to a JSON file."""
+    with open(file_name, "w", encoding="utf-8") as file:
+        json.dump(BILLS, file, indent=2)
 
 
-def syncMeter(meterIp):
-    # Helper kept for the lab: not called by the demo
-    os.system("curl http://" + meterIp + "/reading")
+def sync_meter(meter_ip):
+    """Safely request a meter reading from an IPv4 address."""
+    address = ipaddress.IPv4Address(meter_ip)
+    connection = http.client.HTTPConnection(str(address), timeout=5)
+
+    try:
+        connection.request("GET", "/reading")
+        response = connection.getresponse()
+        response.read()
+        return response.status
+    finally:
+        connection.close()
 
 
 def main():
-    for meterId, previous, current in readMeters(METER_XML):
-        units = calculateUnits(previous, current)
-        generateBill(meterId, units)
-    generateBill("M4", 50, extras={"late_fee": 25})
-    for bill in bills:
-        print(bill["meter"], "used", bill["units"], "units, bill Rs.", bill["amount"])
-    highest = max(bills, key=lambda bill: bill["amount"])
+    """Run the electricity billing program."""
+    for meter_id, previous, current in read_meters(METER_XML):
+        units = calculate_units(previous, current)
+        generate_bill(meter_id, units)
+
+    generate_bill("M4", 50, extras={"late_fee": 25})
+
+    for bill in BILLS:
+        print(
+            bill["meter"],
+            "used",
+            bill["units"],
+            "units, bill Rs.",
+            bill["amount"]
+        )
+
+    highest = max(BILLS, key=lambda bill: bill["amount"])
     print("Highest bill:", highest["meter"])
-    print("Average bill:", averageBill("INR"))
-    total=sum(bill["amount"] for bill in bills)
+    print("Average bill:", average_bill())
+
+    total = sum(bill["amount"] for bill in BILLS)
     print("Total billed:", round(total, 2))
-    saveBills()
-    print("Saved", len(bills), "bills to bills.json")
+
+    save_bills()
+    print("Saved", len(BILLS), "bills to bills.json")
 
 
-main()
+if __name__ == "__main__":
+    main()
